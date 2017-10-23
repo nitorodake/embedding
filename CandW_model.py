@@ -127,7 +127,8 @@ if args.gpu >= 0:
     model.to_gpu()
 
 #optimizer = optimizers.Adam()
-optimizer = optimizers.AdaGrad(lr=0.1)
+#optimizer = optimizers.AdaGrad(lr=0.1)
+optimizer = optimizers.SGD()
 optimizer.setup(model)
 
 
