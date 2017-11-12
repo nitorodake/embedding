@@ -82,6 +82,7 @@ print(' Conbi loss weight  : {}'.format(args.loss_weight))
 print(' Word-Word  regular : {}'.format(args.ww_regular))
 print(' Word-Senti regular : {}'.format(args.ws_regular))
 
+fw = open('./loss.txt','w')
 
 #===========================
 # Sentiment Embedding model
@@ -144,7 +145,7 @@ class SentimentEmbed(chainer.Chain):
 
         sout   = sout[:,0]*sentiment + sout[:,1]*sentiment
         loss_s = F.hinge(F.reshape(sout,(bs,1)),xp.zeros((bs,),dtype=np.int32))
-        loss_s = loss_s + bs
+        loss_s = loss_s * bs
                 
         # ----- word-sentiment regularizaton -----
         swe = self.embed(dict_index)
@@ -155,17 +156,19 @@ class SentimentEmbed(chainer.Chain):
         rw2 = self.embed.W.data[w_cluster[:,1]]
         ww_regular = xp.sum(xp.linalg.norm(rw1-rw2,axis=1)**2)
         
-        # ----- loss calculate ----- 
-        #print(loss_c)
-        #print(loss_s)
-        #print(ws_regular)
-        #print(ww_regular)
-        
+        # ----- loss calculate -----         
         alpha = args.loss_weight
         lamb_ww  = args.ww_regular
         lamb_ws  = args.ws_regular
 
-        return (1-alpha) * loss_c + alpha * loss_s + lamb_ww * ww_regular -lamb_ws * ws_regular
+
+        print('================', file=fw)
+        print('  Context    : ', loss_c.data, file=fw)
+        print('  Seintiment : ', loss_s.data, file=fw)
+        print('  Word-Senti : ', ws_regular.data * lamb_ww, file=fw)
+        print('  Word-Word  : ', ww_regular * lamb_ws, file=fw)
+
+        return (1-alpha) * loss_c + alpha * loss_s + lamb_ww * ww_regular - lamb_ws * ws_regular
         
 
 #============================================
@@ -234,7 +237,7 @@ if args.gpu >= 0:
     model.to_gpu()
 
 #optimizer = optimizers.Adam()
-optimizer = optimizers.AdaGrad()
+optimizer = optimizers.AdaGrad(lr=0.1)
 #optimizer = optimizers.SGD()
 optimizer.setup(model)
 #optimizer.add_hook(chainer.optimizer.WeightDecay(0.0001))
@@ -289,11 +292,17 @@ for epoch in tqdm(range(args.epoch)):
         loss.backward()  
         optimizer.update()
 
+fw.close()
 
 if args.gpu >= 0:
     w = cuda.to_cpu(model.embed.W.data)
 else:
     w = model.embed.W.data
 
-with open('SeitimentEmbed.model','wb') as fw:
+with open('SentimentEmbed.model','wb') as fw:
     pickle.dump(w,fw)
+
+import chainer.computational_graph as cg
+graph = cg.build_computational_graph((loss,), remove_split=True)
+with open('./SentimentEmbed.dot', 'w') as fw:
+    fw.write(graph.dump())
