@@ -82,8 +82,6 @@ print(' Conbi loss weight  : {}'.format(args.loss_weight))
 print(' Word-Word  regular : {}'.format(args.ww_regular))
 print(' Word-Senti regular : {}'.format(args.ws_regular))
 
-fw = open('./loss.txt','w')
-
 #===========================
 # Sentiment Embedding model
 #===========================
@@ -160,13 +158,6 @@ class SentimentEmbed(chainer.Chain):
         alpha = args.loss_weight
         lamb_ww  = args.ww_regular
         lamb_ws  = args.ws_regular
-
-
-        print('================', file=fw)
-        print('  Context    : ', loss_c.data, file=fw)
-        print('  Seintiment : ', loss_s.data, file=fw)
-        print('  Word-Senti : ', ws_regular.data * lamb_ww, file=fw)
-        print('  Word-Word  : ', ww_regular * lamb_ws, file=fw)
 
         return (1-alpha) * loss_c + alpha * loss_s + lamb_ww * ww_regular - lamb_ws * ws_regular
         
@@ -292,7 +283,6 @@ for epoch in tqdm(range(args.epoch)):
         loss.backward()  
         optimizer.update()
 
-fw.close()
 
 if args.gpu >= 0:
     w = cuda.to_cpu(model.embed.W.data)
@@ -301,8 +291,3 @@ else:
 
 with open('SentimentEmbed.model','wb') as fw:
     pickle.dump(w,fw)
-
-import chainer.computational_graph as cg
-graph = cg.build_computational_graph((loss,), remove_split=True)
-with open('./SentimentEmbed.dot', 'w') as fw:
-    fw.write(graph.dump())
