@@ -1,9 +1,9 @@
 """
-C&W word embedding model.
+SSWE(Sentiment-Specific Word Embedding) model.
 
-Collobert, Ronan, and Jason Weston. 
-"A unified architecture for natural language processing: Deep neural networks with multitask learning." 
-Proceedings of the 25th international conference on Machine learning. ACM, 2008.
+Tang, Duyu, et al.
+"Learning Sentiment-Specific Word Embedding for Twitter Sentiment Classification."
+ACL (1). 2014.
 
 by chainer v 2.x
 """
@@ -41,6 +41,9 @@ parser.add_argument('--batchsize', '-b', type=int, default=1000,
 parser.add_argument('--negative-size', '-ns', default=100, type=int,
                     help='number of negative samples')
 
+parser.add_argument('--loss-weight', '-lw', default=0.6, type=float,
+                    help="weight of liner conbination for two model's loss")
+
 parser.add_argument('--epoch', '-e', default=5, type=int,
                     help='number of epochs to learn')
 
@@ -65,12 +68,13 @@ print(' Window            : {}'.format(args.window))
 print(' Epoch             : {}'.format(args.epoch))
 print(' Minibatch size    : {}'.format(args.batchsize))
 print(' Sampling Size     : {}'.format(args.negative_size))
+print(' Conbi loss weight : {}'.format(args.loss_weight))
 
 
 #=====================
-# C&W enbedding model
+# SSWE model
 #=====================
-class CandW(chainer.Chain):
+class SSWE(chainer.Chain):
     
     def __init__(self, n_vocab, n_embed, n_units):
         super(CandW, self).__init__()
@@ -78,9 +82,10 @@ class CandW(chainer.Chain):
         with self.init_scope():
             self.embed = L.EmbedID(n_vocab, n_embed, initialW=initializers.Uniform(1. / n_embed))
             self.l1    = L.Linear(n_embed*(args.window*2+1), n_units) # n_embed * (window*2 + 1)-> n_units
-            self.l2    = L.Linear(n_units, 1)       # n_units -> 1
+            self.lc    = L.Linear(n_units, 1)       # n_units -> 1
+            self.ls    = L.Linear(n_units, 2)       # n_units -> 1
             
-    def __call__(self, context, context_pre, context_fol, neg_context):
+    def __call__(self, context, sentiment, context_pre, context_fol, neg_context):
         bs = context.shape[1]
         
         # ----- context ---------------- 
@@ -89,7 +94,7 @@ class CandW(chainer.Chain):
         e = F.concat(e,axis=1)
         h = self.l1(e)
         th = F.tanh(h)
-        pout = self.l2(th)
+        pout = self.lc(th)
         pout = F.tile(pout,(args.negative_size,1))
 
         # ---------- negative ----------
@@ -104,7 +109,6 @@ class CandW(chainer.Chain):
         pe = xp.tile(pe,(args.negative_size,1))
         fe = xp.tile(fe,(args.negative_size,1))
         
-        #ne = xp.array([self.embed.W.data[val] for val in neg_context])
         ne = xp.array(self.embed.W.data[neg_context])
 
         # concatenate        
@@ -113,13 +117,28 @@ class CandW(chainer.Chain):
 
         # forward 
         nout = xp.tanh(ne_in.dot(self.l1.W.data.T))
-        nout = nout.dot(self.l2.W.data.T)
+        nout = nout.dot(self.lc.W.data.T)
                 
         # ---------- hinge loss calculate ----------
-        loss = F.hinge(pout + nout, xp.zeros((args.negative_size*bs,),dtype=np.int32))
-        print(loss * args.negative_size * bs)
-        #return loss
-        return loss * args.negative_size * bs
+        loss_c = F.hinge(pout + nout, xp.zeros((args.negative_size*bs,),dtype=np.int32))
+        loss_c = loss_c * args.negative_size * bs
+        
+        # ----- sentiment ----- 
+        sout = self.ls(th) # 0-> nega, 1-> posi
+
+        sentiment[sentiment==1] = -1
+        sentiment[sentiment==0] = 1
+
+        sout   = sout[:,0]*sentiment + sout[:,1]*sentiment
+        loss_s = F.hinge(F.reshape(sout,(bs,1)),xp.zeros((bs,),dtype=np.int32))
+        loss_s = loss_s + bs
+        
+        # ----- loss calculate ----- 
+        #print(loss_c)
+        #print(loss_s)
+
+        alpha = args.loss_weight
+        return (1-alpha) * loss_c + alpha * loss_s
         
 
 #===============
@@ -131,6 +150,8 @@ text_data = np.load('./data/sentence_data.npy')
 counts = collections.Counter(text_data)
 cs = [counts[w] for w in range(len(counts))]
 
+senti_data = np.load('./data/sentiment_data.npy')
+
 # load vocabulary dict     
 with open('./data/vocab.dict','rb') as fr:
     vocab = pickle.load(fr) # word2id
@@ -140,7 +161,7 @@ print('====================')
 print(' vocab size     : {}'.format(n_vocab))
 print(' train data     : {}\n'.format(len(text_data)))
 
-model = CandW(n_vocab, args.embed, args.unit)
+model = SSWE(n_vocab, args.embed, args.unit)
 
 if args.gpu >= 0:
     cuda.get_device_from_id(args.gpu).use()
@@ -170,12 +191,18 @@ for epoch in tqdm(range(args.epoch)):
         index = indexes[n:n+bs]
 
         context = []
+        sentiment = []
 
-        for offset in range(-n_win, n_win + 1):                
+        for offset in range(-n_win, n_win + 1):
+            if offset == 0:
+                sentiment = senti_data[index + offset]
+                
             context.append(text_data[index + offset])
             
                 
         context = np.array(context,dtype=np.int32)
+        sentiment = np.array(sentiment,dtype=np.int32)
+
         context_pre = context[:n_win]
         context_fol = context[-n_win:]
         neg_context = np.array(sampler.sample(ng_size * len(index)),dtype=np.int32)
@@ -184,12 +211,14 @@ for epoch in tqdm(range(args.epoch)):
         # convert
         if args.gpu >= 0:
             context = cuda.to_gpu(context)
+            sentiment = cuda.to_gpu(sentiment)
+
             context_pre = cuda.to_gpu(context_pre)
             context_fol = cuda.to_gpu(context_fol)
             neg_context = cuda.to_gpu(neg_context)
             
         model.zerograds()
-        loss = model(context, context_pre, context_fol, neg_context)
+        loss = model(context, sentiment, context_pre, context_fol, neg_context)
         loss.backward()  
         optimizer.update()
 
